@@ -14,9 +14,9 @@
       "source": "./",
       "strict": false,
       "skills": [
-        "./skills/fetch",
-        "./skills/review",
-        "./skills/compile"
+        "./newsletter-editor/skills/fetch",
+        "./newsletter-editor/skills/review",
+        "./newsletter-editor/skills/compile"
       ]
     }
   ]
