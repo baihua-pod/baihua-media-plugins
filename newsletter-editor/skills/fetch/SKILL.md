@@ -15,6 +15,10 @@ Plugin root: `skills/newsletter-editor/`. All commands run from vault root.
 python3 skills/newsletter-editor/fetch_rss.py
 ```
 
+**Auto-date detection**: If today's folder already has `newsletter.md` (compiled/published), the script automatically targets tomorrow's date. Override with `--date YYYY-MM-DD`.
+
+**Direct subfolder saving**: New articles are saved directly into `inbox/` or `skipped/` subdirectories (no need to run `organize.py` after fetch).
+
 Reads RSS from `config.json` (Memeorandum + Political Wire), scrapes via Jina Reader, deduplicates against subfolders, saves as `status: inbox`. New articles default to `ghost_access: "paid"`.
 
 Both sources are aggregators. The fetch script extracts original article URLs and sets `source` from the original publication domain.

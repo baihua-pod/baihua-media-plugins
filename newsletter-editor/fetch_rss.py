@@ -17,7 +17,7 @@ import re
 import sys
 import time
 import unicodedata
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from html import unescape
 from pathlib import Path
 from urllib.parse import urlparse
@@ -479,20 +479,25 @@ def check_content_quality(content: str) -> str | None:
 def save_article(content_dir: Path, title: str, source: str, url: str,
                  content: str, pub_date: str) -> tuple[Path, bool]:
     """Save an article as a markdown file. Returns (path, is_good).
-    Auto-sets status to 'skipped' if content quality is insufficient."""
+    Auto-sets status to 'skipped' if content quality is insufficient.
+    Saves directly into inbox/ or skipped/ subdirectory."""
+    # Quality check
+    skip_reason = check_content_quality(content)
+    status = "skipped" if skip_reason else "inbox"
+
+    # Save directly to the correct status subdirectory
+    target_dir = content_dir / status
+    target_dir.mkdir(parents=True, exist_ok=True)
+
     slug = slugify(title) or url_hash(url)
     filename = f"{slug}.md"
-    filepath = content_dir / filename
+    filepath = target_dir / filename
 
     # Avoid filename collisions
     counter = 1
     while filepath.exists():
-        filepath = content_dir / f"{slug}-{counter}.md"
+        filepath = target_dir / f"{slug}-{counter}.md"
         counter += 1
-
-    # Quality check
-    skip_reason = check_content_quality(content)
-    status = "skipped" if skip_reason else "inbox"
 
     # Escape quotes in title for YAML
     safe_title = title.replace('"', '\\"')
@@ -626,17 +631,33 @@ def fetch_feed(source: dict, existing_urls: set, content_dir: Path,
     return good_count, skip_count
 
 
+def detect_target_date(config: dict) -> date:
+    """Auto-detect the target date for fetching.
+
+    If today's newsletter.md already exists (compiled/published),
+    target tomorrow instead.
+    """
+    today = date.today()
+    today_dir = get_content_dir(config, today)
+    if (today_dir / "newsletter.md").exists():
+        tomorrow = today + timedelta(days=1)
+        print(f"  ℹ {today.isoformat()} already has newsletter.md → targeting {tomorrow.isoformat()}")
+        return tomorrow
+    return today
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch RSS feeds for 美轮美换 Newsletter")
     parser.add_argument("--date", type=str, default=None,
-                        help="Target date (YYYY-MM-DD), defaults to today")
+                        help="Target date (YYYY-MM-DD), defaults to auto-detect")
     args = parser.parse_args()
 
-    target_date = date.today()
+    config = load_config()
+
     if args.date:
         target_date = date.fromisoformat(args.date)
-
-    config = load_config()
+    else:
+        target_date = detect_target_date(config)
     content_dir = get_content_dir(config, target_date)
     content_dir.mkdir(parents=True, exist_ok=True)
     scrape_timeout = config.get("scrape_timeout", 30)
