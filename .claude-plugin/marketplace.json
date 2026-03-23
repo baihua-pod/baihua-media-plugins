@@ -11,12 +11,12 @@
     {
       "name": "newsletter-editor",
       "description": "美轮美换(The American Roulette)每日新闻通讯完整工作流。抓取美国政治新闻RSS、翻译中文摘要、审核去重、编辑newsletter、发布社交媒体和Ghost博客。",
-      "source": "./",
+      "source": "./newsletter-editor",
       "strict": false,
       "skills": [
-        "./newsletter-editor/skills/fetch",
-        "./newsletter-editor/skills/review",
-        "./newsletter-editor/skills/compile"
+        "./skills/fetch",
+        "./skills/review",
+        "./skills/compile"
       ]
     }
   ]
