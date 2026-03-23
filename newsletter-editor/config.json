@@ -1,0 +1,21 @@
+{
+  "content_dir": "📚 Areas/Work/Baihua Media/The American Roulette/每日新闻通讯",
+  "max_articles_per_feed": 20,
+  "scrape_timeout": 30,
+  "sources": [
+    {
+      "name": "Memeorandum",
+      "url": "https://www.memeorandum.com/feed.xml",
+      "type": "aggregator",
+      "enabled": true,
+      "description": "Political news aggregator — primary source"
+    },
+    {
+      "name": "Political Wire",
+      "url": "https://politicalwire.com/feed/",
+      "type": "aggregator",
+      "enabled": true,
+      "description": "Political Wire aggregator — curated political news with links to original sources"
+    }
+  ]
+}
