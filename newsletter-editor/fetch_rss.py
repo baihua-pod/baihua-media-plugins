@@ -440,13 +440,13 @@ def url_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()[:8]
 
 
-def get_existing_urls(content_dir: Path) -> set[str]:
-    """Scan existing markdown files for their source_url to deduplicate."""
+def _extract_urls_from_dir(directory: Path) -> set[str]:
+    """Extract source_url values from all markdown files in a directory."""
     urls = set()
-    if not content_dir.exists():
+    if not directory.exists():
         return urls
-    for f in content_dir.glob("**/*.md"):
-        if f.name.startswith("_") or f.name == "newsletter.md":
+    for f in directory.glob("**/*.md"):
+        if f.name.startswith("_") or f.name in ("newsletter.md", "review.md"):
             continue
         try:
             text = f.read_text(encoding="utf-8")
@@ -455,6 +455,17 @@ def get_existing_urls(content_dir: Path) -> set[str]:
                 urls.add(match.group(1).strip())
         except Exception:
             pass
+    return urls
+
+
+def get_existing_urls(content_dir: Path) -> set[str]:
+    """Scan all date folders for source_urls to deduplicate across days."""
+    # Deduplicate across the current date folder AND all sibling date folders
+    parent = content_dir.parent
+    urls = set()
+    for day_dir in parent.iterdir():
+        if day_dir.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}$", day_dir.name):
+            urls |= _extract_urls_from_dir(day_dir)
     return urls
 
 
