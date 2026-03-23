@@ -1,0 +1,23 @@
+{
+  "name": "baihua-media-plugins",
+  "owner": {
+    "name": "Sirui Hua"
+  },
+  "metadata": {
+    "description": "百花媒体 Claude Code 插件集",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "newsletter-editor",
+      "description": "美轮美换(The American Roulette)每日新闻通讯完整工作流。抓取美国政治新闻RSS、翻译中文摘要、审核去重、编辑newsletter、发布社交媒体和Ghost博客。",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/fetch",
+        "./skills/review",
+        "./skills/compile"
+      ]
+    }
+  ]
+}
