@@ -49,6 +49,9 @@ def get_content_dir(config: dict, target_date: date) -> Path:
 
 # --- URL Extraction ---
 
+AGGREGATOR_DOMAINS = {"memeorandum.com", "mediagazer.com", "techmeme.com", "politicalwire.com"}
+
+
 def extract_aggregator_urls(html_description: str) -> list[str]:
     """
     Extract article URLs from aggregator RSS descriptions (memeorandum/mediagazer pattern).
@@ -63,7 +66,7 @@ def extract_aggregator_urls(html_description: str) -> list[str]:
         if parsed.scheme in ("http", "https") and parsed.netloc:
             domain = parsed.netloc.lower().replace("www.", "")
             # Skip links back to the aggregator itself
-            if domain not in ("memeorandum.com", "mediagazer.com", "techmeme.com", "politicalwire.com"):
+            if domain not in AGGREGATOR_DOMAINS:
                 urls.append(href)
     # Return unique URLs preserving order
     seen = set()
@@ -73,6 +76,21 @@ def extract_aggregator_urls(html_description: str) -> list[str]:
             seen.add(u)
             unique.append(u)
     return unique
+
+
+def extract_original_url_from_content(content: str) -> str | None:
+    """Extract the first non-aggregator article URL from scraped markdown content.
+    Used when an aggregator page is scraped and we need to find the original article link."""
+    # Try markdown links first: [Source](url)
+    md_links = re.findall(r'\[([^\]]+)\]\((https?://[^)]+)\)', content)
+    for text, url in md_links:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower().replace("www.", "")
+        if not any(agg in domain for agg in AGGREGATOR_DOMAINS):
+            # Skip short tag/topic links, social media, and anchor-only links
+            if len(text) > 2 and '#' not in parsed.path.split('/')[-1][:5]:
+                return url
+    return None
 
 
 def get_source_from_url(url: str) -> str:
@@ -607,17 +625,69 @@ def fetch_feed(source: dict, existing_urls: set, content_dir: Path,
                 pass
 
         # Scrape full content
+        entry_link = entry.get("link", "")
         print(f"  → Scraping: {entry_title[:60]}...")
-        content = scrape_with_jina(article_url, timeout=scrape_timeout)
 
-        if not content:
-            # Fall back to RSS description
-            content = clean_rss_content(entry)
-            if content:
-                print(f"    ↳ Using RSS description (Jina failed)")
-            else:
-                print(f"    ✗ No content available, skipping")
-                continue
+        if is_aggregator:
+            # Multi-step scraping for aggregator sources:
+            # 1. Try Jina on original article URL
+            content = scrape_with_jina(article_url, timeout=scrape_timeout)
+
+            if not content and article_url != entry_link and entry_link:
+                # 2. Original URL failed (paywall) — try scraping the aggregator page
+                print(f"    ↳ Original URL failed, trying aggregator page...")
+                agg_content = scrape_with_jina(entry_link, timeout=scrape_timeout)
+                if agg_content:
+                    # Try to extract original URL from the aggregator page content
+                    found_url = extract_original_url_from_content(agg_content)
+                    if found_url and found_url != article_url:
+                        print(f"    ↳ Found original URL in aggregator page, retrying...")
+                        content = scrape_with_jina(found_url, timeout=scrape_timeout)
+                        if content:
+                            # Update article_url and source to the newly found original
+                            article_url = found_url
+                            article_source = get_source_from_url(found_url)
+                    if not content:
+                        # Aggregator page content is NOT usable — fall through to RSS
+                        print(f"    ↳ Could not get original article content")
+
+            elif not content and article_url == entry_link:
+                # URL extraction from description failed — article_url IS the aggregator URL
+                # Try scraping it to find original URL inside
+                print(f"    ↳ No original URL extracted, scraping aggregator page...")
+                agg_content = scrape_with_jina(entry_link, timeout=scrape_timeout)
+                if agg_content:
+                    found_url = extract_original_url_from_content(agg_content)
+                    if found_url:
+                        print(f"    ↳ Found original URL: {found_url[:80]}...")
+                        content = scrape_with_jina(found_url, timeout=scrape_timeout)
+                        if content:
+                            article_url = found_url
+                            article_source = get_source_from_url(found_url)
+                if not content:
+                    # Last resort for aggregator: use RSS description (brief quotes only)
+                    content = clean_rss_content(entry)
+                    if content:
+                        print(f"    ↳ Using RSS description (all scraping failed)")
+
+            if not content:
+                # Final fallback: RSS description
+                content = clean_rss_content(entry)
+                if content:
+                    print(f"    ↳ Using RSS description (Jina failed)")
+                else:
+                    print(f"    ✗ No content available, skipping")
+                    continue
+        else:
+            # Non-aggregator: simple scrape
+            content = scrape_with_jina(article_url, timeout=scrape_timeout)
+            if not content:
+                content = clean_rss_content(entry)
+                if content:
+                    print(f"    ↳ Using RSS description (Jina failed)")
+                else:
+                    print(f"    ✗ No content available, skipping")
+                    continue
 
         # Save article
         filepath, is_good = save_article(
