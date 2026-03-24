@@ -1,7 +1,7 @@
 ---
 name: fetch
 description: |
-  美轮美换新闻抓取+翻译。从Memeorandum和Political Wire抓取RSS，翻译中文摘要，追溯原始来源。每天可执行多次。
+  美轮美换新闻抓取+翻译。从Memeorandum和Political Wire抓取RSS，或抓取单独URL。翻译中文摘要，追溯原始来源。每天可执行多次。
   触发词: baihua fetch, 百花 fetch, 抓取新闻, fetch news, 翻译新闻, translate, baihua run, 百花 run
 ---
 
@@ -9,7 +9,15 @@ description: |
 
 Plugin root: `skills/newsletter-editor/`. All commands run from vault root.
 
-## Step 1: Fetch
+## Mode Detection
+
+Check ARGUMENTS for a URL (starts with `http://` or `https://`):
+- **URL present** → Single Article Mode (skip RSS, go to Step 1B)
+- **No URL** → RSS Batch Mode (Step 1A)
+
+Other arguments (`--date YYYY-MM-DD`) apply to both modes.
+
+## Step 1A: RSS Batch Fetch
 
 ```bash
 python3 skills/newsletter-editor/fetch_rss.py
@@ -20,6 +28,16 @@ python3 skills/newsletter-editor/fetch_rss.py
 **Direct subfolder saving**: New articles are saved directly into `inbox/` or `skipped/` subdirectories (no need to run `organize.py` after fetch).
 
 Reads RSS from `config.json` (Memeorandum + Political Wire), scrapes via Jina Reader, deduplicates against subfolders, saves as `status: inbox`. New articles default to `ghost_access: "paid"`.
+
+## Step 1B: Single Article Fetch
+
+When a URL is provided as argument:
+
+1. **Scrape** the URL using fallback chain: Jina Reader (`https://r.jina.ai/<URL>` via WebFetch) → WebFetch direct → Chrome browser tools → Edge AppleScript
+2. **Extract metadata**: title from page content, source from domain (e.g. `nytimes.com` → `NYT`)
+3. **Generate filename**: slugify the title, truncate to 60 chars
+4. **Create file** in the target date's `inbox/` with full frontmatter template (see Article File Format below), `## Original Content` populated with scraped text
+5. **Proceed to Step 2** (translate) immediately — do not wait for a separate translate cycle
 
 Both sources are aggregators. The fetch script extracts original article URLs and sets `source` from the original publication domain.
 
