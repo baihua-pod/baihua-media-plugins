@@ -62,15 +62,16 @@ Compare against approved articles. Same event?
 
 ### 6. Classify
 
-Target: ≥50% paid content across all approved articles.
+Targets: ≥50% paid content, 15-20% share: true across all approved articles.
 
 | Type | Criteria | `share` | `ghost_access` |
 |------|----------|---------|----------------|
-| **viral** | ⭐8+或极具传播力的突发新闻 | `true` | `free` |
-| **deep** | 有深度、niche、分析类，或⭐7以下 | `false` | `paid` |
+| **viral** | ⭐8+，必定分享 | `true` | `free` |
+| **share-worthy** | ⭐7且传播力强（话题热度高、有冲突性、涉及广泛关注人物） | `true` | `free` |
+| **deep** | ⭐7 niche/分析类，或⭐6以下 | `false` | `paid` |
 | **skip** | 质量不足或重复 | — | — |
 
-Social sharing bar is high: only ⭐8+ or genuinely viral breaking news. Default to deep/paid.
+After batch review, verify share ratio is 15-20% and paid ratio ≥50%.
 
 ## Batch Presentation
 
