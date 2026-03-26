@@ -46,16 +46,28 @@ Both sources are aggregators. The fetch script extracts original article URLs an
 Claude translates all `status: inbox` articles. For each:
 
 1. Read `## Original Content` and `glossary.json`
-2. **Source attribution**: If source is still Political Wire or Memeorandum, trace to original publication (NYT, WSJ, Politico, etc.) and update `source` + `source_url`
-3. Write `## 中文摘要` and `## 社交文案`
-4. Set frontmatter: `status: draft`, `ai_title`, `importance` (1-10), `category`, `share`, `share_score`, `ghost_access: "paid"`
-5. Report: "✓ [ai_title] (importance: X, category: Y)"
+2. **Thin content detection + auto-fallback** (BEFORE translating):
+   - If `## Original Content` has < 50 lines, OR only contains PW/Memeorandum quote paragraphs (look for `the [Source] reports` patterns), OR `source_url` still points to PW/Memeorandum:
+     a. Extract the original source URL from the content (look for links in PW quotes, or derive from `source` field + article title)
+     b. Update `source_url` to the original URL
+     c. **Fallback chain to scrape full article**:
+        1. Jina Reader: `WebFetch("https://r.jina.ai/<original_url>")`
+        2. WebFetch direct: `WebFetch("<original_url>")`
+        3. Edge AppleScript (see below) — works for paywalled sites if user is logged in
+        4. PW quotes as last resort — translate with what's available, but add `<!-- thin_content: true -->` comment after Original Content header so review can flag it
+     d. Replace `## Original Content` with the full scraped article
+   - This step runs **automatically** during every fetch loop, not just manual invocations
+3. **Source attribution**: If source is still Political Wire or Memeorandum, trace to original publication (NYT, WSJ, Politico, etc.) and update `source` + `source_url`
+4. Write `## 中文摘要` and `## 社交文案`
+5. Set frontmatter: `status: draft`, `ai_title`, `importance` (1-10), `category`, `share`, `share_score`, `ghost_access: "paid"`
+6. Report: "✓ [ai_title] (importance: X, category: Y)" — append "(enriched)" if fallback scraping was used
 
-**PW articles must be scraped from original source URL**, not just the PW summary. PW pages only have 1-2 paragraph quotes. Fallback chain: Jina Reader → WebFetch → Chrome browser tools → Edge AppleScript → PW quotes (last resort).
+**PW articles must be scraped from original source URL**, not just the PW summary. PW pages only have 1-2 paragraph quotes.
 
 ```bash
-# Edge AppleScript fallback
+# Edge AppleScript fallback — wait 5s for page load
 open -a "Microsoft Edge" "URL"
+sleep 5
 osascript -e 'tell application "Microsoft Edge" to execute active tab of first window javascript "document.body.innerText"'
 ```
 
