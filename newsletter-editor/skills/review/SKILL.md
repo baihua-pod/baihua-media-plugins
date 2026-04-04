@@ -34,6 +34,19 @@ Check against [translation-guide.md](../../references/translation-guide.md) rule
 - [ ] **Coverage**: covers ≥3 of: who, what, impact, when
 - [ ] **Length**: matches importance tier (⭐1-3: 80-120字, ⭐4-6: 100-160字, ⭐7-8: 140-200字, ⭐9-10: 180-240字)
 
+### 2.5 Writing Quality (AI味 + 翻译腔)
+
+Full checklist: [references/writing-quality.md](../../references/writing-quality.md). Scan for:
+
+- [ ] **No AI高频词**: 「至关重要」「不可或缺」「格局」「标志着」「蓬勃发展」「深入」
+- [ ] **No被动滥用**: 「被认为」「被视为」在非受害语境应改主动
+- [ ] **No万能动词**: 「作出」「进行」「展开」→ 直接用动词
+- [ ] **No三连排比**: 「不仅...而且...更...」结构拆掉
+- [ ] **No「的」字链**: 连续两个以上「的」拆句
+- [ ] **中文语序**: 先因后果、条件句在前，无倒装从句
+- [ ] **代词精简**: 主语没换不重复「他」「她」
+- [ ] **No空洞总结**: 无「综上所述」「值得注意的是」等无信息量的句子
+
 ### 3. Social Content (社交文案)
 
 - [ ] 120-280 chars, info density close to summary

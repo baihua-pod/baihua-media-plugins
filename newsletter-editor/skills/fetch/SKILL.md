@@ -59,8 +59,16 @@ Claude translates all `status: inbox` articles. For each:
    - This step runs **automatically** during every fetch loop, not just manual invocations
 3. **Source attribution**: If source is still Political Wire or Memeorandum, trace to original publication (NYT, WSJ, Politico, etc.) and update `source` + `source_url`
 4. Write `## 中文摘要` and `## 社交文案`
-5. Set frontmatter: `status: draft`, `ai_title`, `importance` (1-10), `category`, `share`, `share_score`, `ghost_access: "paid"`
-6. Report: "✓ [ai_title] (importance: X, category: Y)" — append "(enriched)" if fallback scraping was used
+5. **Self-check writing quality** — scan output for AI味 + 翻译腔 before saving:
+   - 搜「被」→ 非受害语境改主动
+   - 搜「至关重要」「不可或缺」「格局」「标志着」→ 换朴素词
+   - 搜「作出」「进行」「展开」→ 直接用动词
+   - 检查有无三连排比（「不仅...而且...更...」）→ 拆掉
+   - 检查「的」字链 → 连续两个以上就拆句
+   - 检查语序 → 先因后果，条件句在前
+   See [references/writing-quality.md](../../references/writing-quality.md) for full checklist.
+6. Set frontmatter: `status: draft`, `ai_title`, `importance` (1-10), `category`, `share`, `share_score`, `ghost_access: "paid"`
+7. Report: "✓ [ai_title] (importance: X, category: Y)" — append "(enriched)" if fallback scraping was used
 
 **PW articles must be scraped from original source URL**, not just the PW summary. PW pages only have 1-2 paragraph quotes.
 

@@ -7,6 +7,7 @@
 - [Summary Length](#summary-length)
 - [Coverage Requirements](#coverage-requirements)
 - [Refinement Priorities](#refinement-priorities)
+- [Writing Quality](#writing-quality)
 - [Social Content](#social-content)
 - [Categories](#categories)
 - [Terminology](#terminology)
@@ -43,7 +44,23 @@
 - 时间锚点（何时）
 
 ## Refinement Priorities
-优化翻译时优先修复：长句拆分 → 重复表达 → 被动语态改主动 → 术语不统一
+优化翻译时优先修复：长句拆分 → 被动改主动 → 万能动词替换 → AI高频词替换 → 术语不统一
+
+## Writing Quality
+翻译后必须检查AI味和翻译腔。详细清单见 [references/writing-quality.md](writing-quality.md)。
+
+**翻译时最高优先级（5项速查）：**
+1. **被动句** — 搜「被」字，非受害语境改主动（「被认为是」→「公认」）
+2. **AI高频词** — 禁用「至关重要」「不可或缺」「深入」「格局」「标志着」「蓬勃发展」，用朴素词替代
+3. **万能动词** — 「作出决定」→「决定」；「进行讨论」→「讨论」；「展开调查」→「调查」
+4. **三连排比** — 禁止「不仅...而且...更...」结构
+5. **「的」字链** — 连续两个以上「的」必须拆句或省略
+
+**翻译腔核心规则：**
+- 中文语序：先因后果、先条件后结论，不要把从句倒置
+- 能省就省：「关于」「对于」「在...方面」多余时删掉
+- 代词不重复：主语没换就不要重复「他」「她」
+- 用具体动词：不要「更好地理解」，要「想清楚」；不要「有效地解决」，要「解决了」
 
 ## Social Content
 
