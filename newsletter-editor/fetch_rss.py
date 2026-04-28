@@ -138,6 +138,38 @@ def get_source_from_url(url: str) -> str:
 
 # --- Content Scraping ---
 
+BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+
+def scrape_direct(url: str, timeout: int = 30) -> str | None:
+    """Scrape a page directly with httpx + BeautifulSoup (browser UA).
+    Useful for sites that block Jina but allow normal browser requests."""
+    try:
+        resp = httpx.get(url, timeout=timeout, follow_redirects=True,
+                         headers={"User-Agent": BROWSER_UA})
+        if resp.status_code == 200 and len(resp.text) > 500:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # Remove script/style/nav elements
+            for tag in soup.find_all(["script", "style", "nav", "footer", "aside"]):
+                tag.decompose()
+            # Extract links first (for URL tracing), then text
+            links_md = []
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                text = a.get_text(strip=True)
+                if href.startswith("http") and text and len(text) > 3:
+                    links_md.append(f"[{text}]({href})")
+            body_text = soup.get_text(separator="\n")
+            body_text = re.sub(r"\n{3,}", "\n\n", body_text).strip()
+            # Append extracted links as markdown for URL extraction
+            if links_md:
+                body_text += "\n\n---\n\n" + "\n".join(links_md[:30])
+            return body_text if len(body_text) > 200 else None
+    except (httpx.TimeoutException, httpx.ConnectError):
+        pass
+    return None
+
+
 def scrape_with_jina(url: str, timeout: int = 30) -> str | None:
     """Scrape article content using Jina Reader API."""
     jina_url = f"https://r.jina.ai/{url}"
@@ -458,6 +490,20 @@ def url_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()[:8]
 
 
+def normalize_url(url: str) -> str:
+    """Normalize a URL for dedup: strip query string, fragment, and trailing slash.
+
+    Memeorandum and other aggregators append tracking params (e.g.
+    ?Date=20260407&Profile=CNN) that cause the same article to be re-fetched
+    on every cycle. Normalizing strips those so dedup works.
+    """
+    if not url:
+        return url
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/") or "/"
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
 def _extract_urls_from_dir(directory: Path) -> set[str]:
     """Extract source_url values from all markdown files in a directory."""
     urls = set()
@@ -470,7 +516,7 @@ def _extract_urls_from_dir(directory: Path) -> set[str]:
             text = f.read_text(encoding="utf-8")
             match = re.search(r'^source_url:\s*["\']?(.+?)["\']?\s*$', text, re.MULTILINE)
             if match:
-                urls.add(match.group(1).strip())
+                urls.add(normalize_url(match.group(1).strip()))
         except Exception:
             pass
     return urls
@@ -562,6 +608,77 @@ published: []
     return filepath, skip_reason is None
 
 
+# --- Memeorandum Web Scraper ---
+
+def scrape_memeorandum_stories(max_stories: int = 40) -> list[dict]:
+    """Scrape lead stories from memeorandum.com homepage.
+    Returns list of dicts with: title, url, source, entry_link (memeorandum anchor)."""
+    try:
+        resp = httpx.get("https://www.memeorandum.com/", timeout=30,
+                         follow_redirects=True, headers={"User-Agent": BROWSER_UA})
+        if resp.status_code != 200:
+            print(f"  ✗ Memeorandum page returned {resp.status_code}")
+            return []
+    except Exception as e:
+        print(f"  ✗ Failed to fetch memeorandum.com: {e}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    stories = []
+    seen_urls = set()
+
+    for item in soup.select(".item"):
+        # Find headline link: first <strong><a> or .L1-.L5 <a>
+        headline_link = item.select_one("strong a[href]")
+        if not headline_link:
+            for cls in ("L1", "L2", "L3", "L4", "L5"):
+                headline_link = item.select_one(f".{cls} a[href]")
+                if headline_link:
+                    break
+        if not headline_link:
+            continue
+
+        href = headline_link["href"]
+        title = headline_link.get_text(strip=True)
+        parsed = urlparse(href)
+        domain = parsed.netloc.lower().replace("www.", "")
+
+        # Skip aggregator self-links and non-http
+        if domain in AGGREGATOR_DOMAINS or parsed.scheme not in ("http", "https"):
+            continue
+
+        # Deduplicate within this scrape
+        norm = normalize_url(href)
+        if norm in seen_urls:
+            continue
+        seen_urls.add(norm)
+
+        # Extract source citation text (usually in a <cite> or after the link)
+        cite = item.select_one("cite")
+        source_text = cite.get_text(strip=True) if cite else ""
+        # Get author if present (after " / " in cite)
+        author = ""
+        if " / " in source_text:
+            parts = source_text.split(" / ", 1)
+            author = parts[0].strip()
+            source_text = parts[1].strip()
+
+        source_name = get_source_from_url(href)
+        display_title = f"{title} ({author}/{source_name})" if author else f"{title} ({source_name})"
+
+        stories.append({
+            "title": display_title,
+            "url": href,
+            "source": source_name,
+            "entry_link": f"https://www.memeorandum.com/#{parsed.fragment}" if parsed.fragment else "",
+        })
+
+        if len(stories) >= max_stories:
+            break
+
+    return stories
+
+
 # --- Main Pipeline ---
 
 def fetch_feed(source: dict, existing_urls: set, content_dir: Path,
@@ -570,11 +687,79 @@ def fetch_feed(source: dict, existing_urls: set, content_dir: Path,
     name = source["name"]
     url = source["url"]
     is_aggregator = source.get("type") == "aggregator"
+    scrape_mode = source.get("scrape_mode", "rss")
 
     print(f"\n📡 Fetching: {name} ({url})")
 
+    # --- Web scrape mode (Memeorandum) ---
+    if scrape_mode == "web" and "memeorandum" in url:
+        stories = scrape_memeorandum_stories(
+            max_stories=source.get("max_articles", 40)
+        )
+        if not stories:
+            print(f"  ⚠ No stories found via web scrape")
+            return 0, 0
+        print(f"  Found {len(stories)} stories via web scrape")
+
+        good_count = 0
+        skip_count = 0
+        for story in stories:
+            article_url = story["url"]
+            article_source = story["source"]
+            entry_title = story["title"]
+
+            # Deduplicate
+            if normalize_url(article_url) in existing_urls:
+                continue
+
+            # Filename-based dedup
+            slug = slugify(entry_title) or url_hash(article_url)
+            existing_file = None
+            for sub in ("inbox", "draft", "approved", "skipped"):
+                candidate = content_dir / sub / f"{slug}.md"
+                if candidate.exists():
+                    existing_file = candidate
+                    break
+            if existing_file:
+                existing_urls.add(normalize_url(article_url))
+                continue
+
+            print(f"  → Scraping: {entry_title[:60]}...")
+
+            # Scrape original source
+            content = scrape_with_jina(article_url, timeout=scrape_timeout)
+            if not content:
+                print(f"    ✗ Jina failed, skipping")
+                continue
+
+            # Second dedup check after scrape
+            if normalize_url(article_url) in existing_urls:
+                continue
+
+            filepath, is_good = save_article(
+                content_dir=content_dir,
+                title=entry_title,
+                source=article_source,
+                url=article_url,
+                content=content,
+                pub_date=target_date.isoformat(),
+            )
+            existing_urls.add(normalize_url(article_url))
+            if is_good:
+                good_count += 1
+                print(f"    ✓ Saved: {filepath.name}")
+            else:
+                skip_count += 1
+                print(f"    ⊘ Skipped (insufficient content): {filepath.name}")
+            time.sleep(0.5)
+
+        return good_count, skip_count
+
+    # --- RSS mode (default) ---
     try:
-        resp = httpx.get(url, timeout=30, follow_redirects=True)
+        resp = httpx.get(url, timeout=30, follow_redirects=True, headers={
+            "User-Agent": BROWSER_UA
+        })
         feed = feedparser.parse(resp.text)
     except Exception as e:
         print(f"  ✗ Failed to parse feed: {e}")
@@ -593,9 +778,14 @@ def fetch_feed(source: dict, existing_urls: set, content_dir: Path,
         entry_title = entry.get("title", "Untitled")
 
         if is_aggregator:
-            # Extract actual article URLs from aggregator description
+            # Extract actual article URLs from aggregator description/content HTML
             description = entry.get("description", "") or entry.get("summary", "")
             article_urls = extract_aggregator_urls(description)
+            # Also check content field (PW stores links in content HTML, not description)
+            if not article_urls and hasattr(entry, "content") and entry.content:
+                content_html = entry.content[0].get("value", "")
+                if content_html:
+                    article_urls = extract_aggregator_urls(content_html)
             if article_urls:
                 # Process the first (primary) article URL
                 article_url = article_urls[0]
@@ -612,8 +802,8 @@ def fetch_feed(source: dict, existing_urls: set, content_dir: Path,
             if not article_url:
                 continue
 
-        # Deduplicate
-        if article_url in existing_urls:
+        # Deduplicate (normalize to strip tracking query params / fragments)
+        if normalize_url(article_url) in existing_urls:
             continue
 
         # Parse publication date
@@ -636,6 +826,30 @@ def fetch_feed(source: dict, existing_urls: set, content_dir: Path,
                 agg_content = scrape_with_jina(entry_link, timeout=scrape_timeout)
                 if agg_content:
                     print(f"    ↳ Got aggregator page content")
+
+            # Step 1.5: If article_url is still an aggregator URL (PW fallback case),
+            # scrape the aggregator page to find the original source link
+            article_domain = urlparse(article_url).netloc.lower().replace("www.", "")
+            if article_domain in AGGREGATOR_DOMAINS:
+                # First try extracting URL from RSS content we already have
+                found_url = extract_original_url_from_content(agg_content) if agg_content else None
+                # If RSS content has no URLs (common for PW), scrape the actual page
+                if not found_url:
+                    # Try Jina first, then direct scrape (PW blocks Jina via Cloudflare)
+                    page_content = scrape_with_jina(article_url, timeout=scrape_timeout)
+                    if not page_content:
+                        page_content = scrape_direct(article_url, timeout=scrape_timeout)
+                        if page_content:
+                            print(f"    ↳ Got aggregator page via direct scrape")
+                    if page_content:
+                        found_url = extract_original_url_from_content(page_content)
+                        # Also use the richer page content as agg_content
+                        if len(page_content) > len(agg_content or ""):
+                            agg_content = page_content
+                if found_url:
+                    print(f"    ↳ Traced original URL from aggregator page: {found_url[:80]}...")
+                    article_url = found_url
+                    article_source = get_source_from_url(found_url)
 
             # Step 2: Try to scrape original source URL to enrich
             original_content = None
@@ -677,6 +891,29 @@ def fetch_feed(source: dict, existing_urls: set, content_dir: Path,
                     print(f"    ✗ No content available, skipping")
                     continue
 
+        # Second dedup check: article_url may have been updated to the original
+        # source URL during tracing/scraping (Steps 1.5/2/3 above). The first
+        # dedup check used the raw RSS URL (e.g. PW link), but an existing file
+        # may already store the traced original URL — re-check before saving.
+        if normalize_url(article_url) in existing_urls:
+            continue
+
+        # Filename-based dedup: if a file with the same slug already exists in
+        # any status subfolder for this date, treat as duplicate. Catches the
+        # case where source_url was manually updated post-translation (e.g.
+        # PW → WSJ) so URL-based dedup no longer matches the RSS feed entry.
+        slug = slugify(entry_title) or url_hash(article_url)
+        existing_file = None
+        for sub in ("inbox", "draft", "approved", "skipped"):
+            candidate = content_dir / sub / f"{slug}.md"
+            if candidate.exists():
+                existing_file = candidate
+                break
+        if existing_file:
+            print(f"    ⊘ Skipped (filename already in {existing_file.parent.name}/)")
+            existing_urls.add(normalize_url(article_url))
+            continue
+
         # Save article
         filepath, is_good = save_article(
             content_dir=content_dir,
@@ -686,7 +923,7 @@ def fetch_feed(source: dict, existing_urls: set, content_dir: Path,
             content=content,
             pub_date=pub_date_str,
         )
-        existing_urls.add(article_url)
+        existing_urls.add(normalize_url(article_url))
         if is_good:
             good_count += 1
             print(f"    ✓ Saved: {filepath.name}")

@@ -87,8 +87,12 @@ def parse_frontmatter(text: str) -> dict:
 
 
 def extract_section(text: str, heading: str) -> str:
-    """Extract content under a specific heading."""
-    pattern = rf"^## {re.escape(heading)}\s*\n(.*?)(?=\n## |\Z)"
+    """Extract content under a specific heading.
+
+    Only consumes the heading line itself before capturing — empty sections
+    must not absorb subsequent headings.
+    """
+    pattern = rf"^## {re.escape(heading)}[ \t]*\n(.*?)(?=\n## |\Z)"
     match = re.search(pattern, text, re.DOTALL | re.MULTILINE)
     if match:
         return match.group(1).strip()
@@ -125,9 +129,12 @@ def get_publishable_articles(content_dir: Path) -> list[dict]:
                     "importance": fm.get("importance", 0),
                     "share": fm.get("share") is True,
                     "ghost_access": fm.get("ghost_access", "free"),
+                    "ghost_slug": fm.get("ghost_slug", ""),
                     "social_content": extract_section(text, "社交文案"),
                     "summary": extract_section(text, "中文摘要"),
                     "published": published if isinstance(published, list) else [],
+                    "skip_name_check": fm.get("skip_name_check") is True,
+                    "skip_validation": fm.get("skip_validation") is True,
                 })
     return articles
 
@@ -363,6 +370,36 @@ def reply_to_threads_thread(original_article: dict, update_text: str, dry_run: b
 SUBSCRIBE_CTA = "订阅美轮美换，每日美国政治新闻中文速递\nhttps://theamericanroulette.com/"
 
 
+def _strip_markdown(text: str) -> str:
+    """Strip Markdown formatting that won't render on Threads/Bluesky.
+
+    These platforms treat the text as plain text, so `**bold**` shows up as
+    literal asterisks on mobile. Normalize to plain text before splitting.
+
+    Handled:
+      - **bold** / __bold__ → bold
+      - *italic* / _italic_ → italic (single-char, avoiding collisions with `*` used as list markers)
+      - [link text](url)    → "link text url" (keep URL so thread reader can follow)
+      - Leading `# ` headings → drop the hash
+      - Backtick `code` → code
+    """
+    if not text:
+        return text
+    # Links: [text](url) — keep both pieces separated by a space
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 \2", text)
+    # Bold: **x** or __x__ (handle before italic so we don't partial-match)
+    text = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", text)
+    text = re.sub(r"__([^_\n]+)__", r"\1", text)
+    # Italic: *x* or _x_ — only when clearly a pair, not list markers
+    text = re.sub(r"(?<!\*)\*([^*\s][^*\n]*[^*\s]|\S)\*(?!\*)", r"\1", text)
+    text = re.sub(r"(?<!_)_([^_\s][^_\n]*[^_\s]|\S)_(?!_)", r"\1", text)
+    # Inline code
+    text = re.sub(r"`([^`\n]+)`", r"\1", text)
+    # Leading heading hashes on a line
+    text = re.sub(r"(?m)^#{1,6}\s+", "", text)
+    return text
+
+
 def format_thread(article: dict, max_post_len: int) -> list[str]:
     """Format article as an algorithm-optimized social thread.
 
@@ -376,6 +413,7 @@ def format_thread(article: dict, max_post_len: int) -> list[str]:
     content = article["social_content"] or article["summary"]
     if not content:
         return []
+    content = _strip_markdown(content)
 
     posts: list[str] = []
 
@@ -737,8 +775,15 @@ def publish_ghost(article: dict, dry_run: bool = False) -> bool:
         )
     html = "\n".join(html_parts)
 
-    # Generate slug from title
-    slug = article.get("source_url", "").rstrip("/").split("/")[-1][:60] or f"news-{int(_time.time())}"
+    # Slug resolution: ghost_slug frontmatter override > URL basename > filename stem > timestamp
+    from urllib.parse import urlparse as _urlparse
+    _url_path = _urlparse(article.get("source_url", "")).path.rstrip("/")
+    slug = (
+        article.get("ghost_slug")
+        or (_url_path.split("/")[-1][:60] if _url_path else "")
+        or article["path"].stem[:60]
+        or f"news-{int(_time.time())}"
+    )
 
     post_data = {
         "posts": [{
@@ -784,6 +829,276 @@ def publish_ghost(article: dict, dry_run: bool = False) -> bool:
 
 # --- Main ---
 
+# --- Pre-publish validation gate ---
+# Enforces skill rules that previously lived only as documentation in
+# review/SKILL.md and translation-guide.md. See memory:
+#   feedback_newsletter_ai_title_length, feedback_newsletter_summary_length,
+#   feedback_newsletter_no_markdown_social, feedback_newsletter_title_no_media
+
+_CJK_RE = re.compile(r"[一-鿿]")
+
+# Disallowed media-name prefixes in ai_title (e.g. "NYT：xxx").
+# Skill rule (memory feedback_newsletter_title_no_media): media attribution
+# already shown in trailing （[Source](url)）—reader doesn't need it twice.
+_TITLE_MEDIA_PREFIXES = [
+    "NYT", "Politico", "WaPo", "Washington Post", "WSJ", "Wall Street Journal",
+    "CNN", "NBC", "NBC News", "CBS", "CBS News", "ABC", "ABC News",
+    "Bloomberg", "Reuters", "AP", "美联社", "路透社", "彭博社",
+    "Daily Beast", "emptywheel", "Just Security", "The Atlantic", "Atlantic",
+    "Mother Jones", "ProPublica", "The Intercept", "Intercept",
+    "Axios", "Semafor", "Punchbowl", "The Bulwark", "Bulwark", "Fox News",
+    "Economist", "The Economist", "Guardian", "The Guardian", "Lawfare", "New Republic",
+    "纽约时报", "华盛顿邮报", "华尔街日报", "福克斯新闻", "经济学人", "卫报",
+]
+# Whitelist: signed-byline columns / ratings / polls keep their prefix.
+# (Skill exception: 「克鲁格曼：…」「Politico Playbook：…」「Cook 评级：…」)
+_TITLE_PREFIX_WHITELIST = (
+    "Politico Playbook", "Politico Influence",
+    "克鲁格曼", "桑格", "加内什", "Beutler",
+    "Cook 评级", "Marist 民调",
+)
+
+# Summary length tiers by importance — translation-guide.md "Summary Length"
+_LENGTH_TIERS = [(1, 3, 80, 120), (4, 6, 100, 160), (7, 8, 140, 200), (9, 10, 180, 240)]
+
+# Latin proper-noun candidates that are NOT person names (media, orgs, places kept in English).
+# Per-article override: add `skip_name_check: true` to frontmatter.
+_NAME_FORMAT_WHITELIST = {
+    # Media (English-keep tier)
+    "Lawfare", "Axios", "Semafor", "Politico", "Punchbowl", "Bulwark",
+    "Newrepublic", "Mediaite", "Substack", "Newsmax", "Imprimis", "WaPo",
+    "Daily", "Beast", "Mother", "Jones", "ProPublica", "Atlantic",
+    "Intercept", "Guardian", "Economist", "Reuters", "Bloomberg", "Ipsos",
+    # Journals / institutions
+    "Pediatrics", "Hillsdale", "Caltech", "Harvard", "Yale", "Princeton",
+    # Orgs / products kept English
+    "Burisma", "Roundup", "Monsanto", "Bayer", "Tesla", "Disney",
+    "Twitter", "Threads", "Bluesky", "YouTube", "Spotify", "Yachad",
+    # US place fragments / small locations
+    "Pierce", "Moultrie", "Harlan", "Tazewell", "Capitol",
+    # Common English nouns capitalized at sentence start / inside org names
+    "The", "And", "But", "For", "With", "From", "When", "Where", "How", "Why",
+    "Department", "Justice", "Court", "Senate", "House", "Congress",
+    "News", "Police", "Society", "Rule", "Law", "Act", "Truth", "Social",
+    "Results", "Tree", "Pine", "Docket", "Democracy", "Cook", "Sabato",
+}
+
+
+# Style-check constants — translation-guide.md "Common Errors" §2/§4
+# Per-article override: add `skip_validation: true` to frontmatter to bypass ALL style checks.
+_JARGON_BLACKLIST = (
+    # English jargon I tend to leave un-translated
+    "fast-track", "reckoning", "dummymander", "OPP",
+    "mixed feelings", "buckshot", "ballroom-style",
+    "just not up for", "fast track",
+    # Chinese internet slang / wenzhang slang we want to avoid in formal news prose
+    "认知失调", "重置棋盘", "洗地", "薄壁", "破防",
+)
+
+# Media-name uppercase abbreviations that should be 《中文媒体名》 in body text.
+# Detection: token NOT preceded by 《 (which means already wrapped properly).
+# Whitelist: Reuters/Bloomberg/Politico etc. that we keep in English.
+_MEDIA_UPPERCASE_BLACKLIST = (
+    "NYT", "WSJ", "WaPo", "CNN", "MSNBC", "NBC", "ABC", "CBS", "Fox",
+)
+
+
+def _check_date_format(text: str) -> list[str]:
+    """Flag `2/28`-style numeric dates in body — should be `2 月 28 日`.
+
+    Skips lines containing http (URLs) or pure data lists. Conservative regex
+    requires 1-2 digit / 1-2 digit, surrounded by non-date chars.
+    """
+    if not text:
+        return []
+    issues = []
+    for line in text.splitlines():
+        if "http" in line or "URL" in line:
+            continue
+        for m in re.finditer(r"(?<![\d/-])\d{1,2}/\d{1,2}(?![\d/])", line):
+            issues.append(m.group())
+    return issues
+
+
+def _check_media_uppercase(text: str) -> list[str]:
+    """Flag uppercase media tokens (NYT/WSJ/WaPo/CNN/...) not preceded by 《.
+
+    Whitelisted are media we keep in English (Reuters, Bloomberg, Politico, etc.)
+    """
+    if not text:
+        return []
+    issues = []
+    for token in _MEDIA_UPPERCASE_BLACKLIST:
+        for m in re.finditer(rf"\b{re.escape(token)}\b", text):
+            # Skip if already in 《...》 — preceding char is 《
+            if m.start() > 0 and text[m.start() - 1] == "《":
+                continue
+            issues.append(token)
+            break  # one occurrence per token is enough to flag
+    return sorted(set(issues))
+
+
+def _check_ai_title_quality(title: str) -> list[str]:
+    """Three sub-rules: length ≥ 10 CJK, no jargon, no `EnglishName:` prefix.
+
+    Whitelist `_TITLE_PREFIX_WHITELIST` exempts signed bylines / ratings /
+    polls (Politico Playbook, 克鲁格曼, Cook 评级, etc.).
+    """
+    if not title:
+        return []
+    issues = []
+    title_cjk = _cjk_count(title)
+    if title_cjk < 10:
+        issues.append(f"ai_title 中文字 {title_cjk} 字 < 10 字下限")
+    # Jargon (any lowercase match, case-insensitive)
+    title_lower = title.lower()
+    for word in _JARGON_BLACKLIST:
+        if word.lower() in title_lower:
+            issues.append(f"ai_title 含黑话「{word}」")
+    # English-name colon prefix (e.g., "Beutler：")
+    if not any(w in title[:25] for w in _TITLE_PREFIX_WHITELIST):
+        if re.match(r"^[A-Z][a-z]+\s*[:：]", title):
+            issues.append(f"ai_title 以英文人名+冒号开头")
+    return issues
+
+
+def _check_name_format(text: str) -> list[str]:
+    """Find Latin proper nouns NOT enclosed in （…） — likely missing 中文 translation.
+
+    Rule: 人名首次出现必须是「中文（English）」。Heuristic flags mixed-case tokens
+    of length ≥ 4 that are not inside a Chinese parenthetical. Pure acronyms (ICE,
+    FBI) are excluded by the mixed-case filter. False positives can be silenced
+    per-article via `skip_name_check: true` in frontmatter.
+    """
+    if not text:
+        return []
+    issues = []
+    for m in re.finditer(r"\b[A-Z][A-Za-z]{3,}\b", text):
+        token = m.group()
+        if token.isupper() or token.islower():
+            continue
+        if token in _NAME_FORMAT_WHITELIST:
+            continue
+        prefix = text[: m.start()]
+        if prefix.rfind("（") > prefix.rfind("）"):
+            continue
+        issues.append(token)
+    return issues
+
+
+def _cjk_count(s: str) -> int:
+    """Count CJK characters only — skill measures titles/summaries in 中文字数."""
+    return len(_CJK_RE.findall(s or ""))
+
+
+def validate_article(article: dict) -> list[str]:
+    """Return list of human-readable violations. Empty list = passes all checks.
+
+    Per-article whole-bypass: add `skip_validation: true` to frontmatter.
+    """
+    if article.get("skip_validation"):
+        return []
+    violations = []
+    title = (article.get("title") or "").strip()
+    summary = article.get("summary") or ""
+    social = article.get("social_content") or ""
+    importance = article.get("importance", 0)
+    if isinstance(importance, str):
+        try:
+            importance = int(importance)
+        except ValueError:
+            importance = 0
+
+    # 1. ai_title hard cap: 18 CJK chars
+    title_cjk = _cjk_count(title)
+    if title_cjk > 18:
+        violations.append(f"ai_title 超 18 中文字硬上限 ({title_cjk} 字): {title}")
+
+    # 2. ai_title 不得以媒体名+冒号开头（白名单内豁免）
+    if not any(w in title[:25] for w in _TITLE_PREFIX_WHITELIST):
+        for prefix in _TITLE_MEDIA_PREFIXES:
+            if re.match(rf"^{re.escape(prefix)}\s*[:：]", title):
+                violations.append(f"ai_title 以媒体名开头 ({prefix}：): {title}")
+                break
+
+    # 3. 中文摘要 / 社交文案 不得含 Markdown
+    for label, text in (("中文摘要", summary), ("社交文案", social)):
+        if not text:
+            continue
+        if re.search(r"\*\*[^*\n]+\*\*", text):
+            violations.append(f"{label} 含 Markdown 粗体 (**bold**)")
+        if re.search(r"\[[^\]]+\]\([^)\s]+\)", text):
+            violations.append(f"{label} 含 Markdown 链接 [text](url)")
+        if re.search(r"(?m)^#+\s", text):
+            violations.append(f"{label} 含 Markdown 标题 (#)")
+
+    # 4. 中文摘要 字数与 importance 分级一致（+10% 软容忍）
+    summary_cjk = _cjk_count(summary)
+    if summary_cjk > 0:
+        for lo, hi, lmin, lmax in _LENGTH_TIERS:
+            if lo <= importance <= hi:
+                hard_cap = int(lmax * 1.10)
+                if summary_cjk > hard_cap:
+                    violations.append(
+                        f"中文摘要 {summary_cjk} 字超 imp={importance} 上限 {lmax} "
+                        f"(+10% 容忍 {hard_cap})"
+                    )
+                break
+
+    # 5. 人名格式（首次出现「中文（English）」）— 可 frontmatter 加 skip_name_check: true 豁免
+    if not article.get("skip_name_check"):
+        for label, text in (("中文摘要", summary), ("社交文案", social)):
+            naked = _check_name_format(text)
+            if naked:
+                unique = sorted(set(naked))
+                violations.append(
+                    f"{label} 含未译人名: {', '.join(unique[:6])}"
+                    f"{' ...' if len(unique) > 6 else ''}"
+                    "（首次出现要「中文（English）」；如确为机构/地名/媒体名误报，"
+                    "frontmatter 加 skip_name_check: true）"
+                )
+
+    # 6. 日期格式：summary/social 内 `2/28` 应为 `2 月 28 日`
+    for label, text in (("中文摘要", summary), ("社交文案", social)):
+        bad_dates = _check_date_format(text)
+        if bad_dates:
+            unique = sorted(set(bad_dates))
+            violations.append(
+                f"{label} 含数字日期: {', '.join(unique[:5])}"
+                f"{' ...' if len(unique) > 5 else ''}"
+                "（应改为「N 月 N 日」格式）"
+            )
+
+    # 7. 媒体英文缩写：summary/social 内 NYT/WSJ/WaPo 等应为《中文媒体名》
+    for label, text in (("中文摘要", summary), ("社交文案", social)):
+        bad_media = _check_media_uppercase(text)
+        if bad_media:
+            violations.append(
+                f"{label} 含未中译媒体: {', '.join(bad_media)}"
+                "（首次出现应为《纽约时报》《华尔街日报》等中文加书名号格式）"
+            )
+
+    # 8. ai_title style: 中文字 ≥ 10 + 无黑话 + 无「英文名：」前缀
+    title_issues = _check_ai_title_quality(title)
+    for issue in title_issues:
+        violations.append(f"{issue}: {title}")
+
+    return violations
+
+
+def run_preflight_validation(articles: list[dict]) -> int:
+    """Run validate_article on each. Print summary, return number of articles with violations."""
+    failed = 0
+    for a in articles:
+        vios = validate_article(a)
+        if vios:
+            failed += 1
+            print(f"✗ {a['path'].name}")
+            for v in vios:
+                print(f"    · {v}")
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser(description="Publish 美轮美换 Newsletter to social media")
     parser.add_argument("--date", type=str, default=None,
@@ -795,6 +1110,9 @@ def main():
                         help="Preview without publishing")
     parser.add_argument("--limit", type=int, default=0,
                         help="Max number of unpublished articles to process (0 = all)")
+    parser.add_argument("--skip-validation", action="store_true",
+                        help="Bypass pre-flight skill-rule validation (titles, summary length, "
+                             "Markdown). Use only for emergency re-publishes; fix violations first.")
     args = parser.parse_args()
 
     target_date = date.today()
@@ -817,16 +1135,43 @@ def main():
         print("No approved articles found.")
         return
 
+    # --- Pre-flight skill-rule validation gate ---
+    # Refuses to publish articles that violate documented skill rules
+    # (ai_title length, summary length tier, Markdown in 中文 sections, media-name prefix).
+    # Only validates articles that still have unpublished platforms — already-published
+    # articles can't be edited retroactively, so don't block today's batch on yesterday's debt.
+    # Bypass with --skip-validation only for emergency re-publishes.
+    if not args.skip_validation:
+        # Determine which articles still need any publishing
+        social_plats_v = ["bluesky", "threads"]
+        pending = []
+        for a in articles:
+            already = a.get("published", [])
+            is_share_v = a.get("share", False)
+            if args.platform == "all":
+                needed_v = (["bluesky", "threads", "ghost"] if is_share_v else ["ghost"])
+            else:
+                needed_v = [args.platform]
+            if any(p not in already for p in needed_v):
+                pending.append(a)
+        failures = run_preflight_validation(pending) if pending else 0
+        if failures:
+            print(f"\n✗ {failures} article(s) failed pre-flight validation. "
+                  f"Fix the violations above (or pass --skip-validation to override) "
+                  f"and re-run.\n")
+            sys.exit(1)
+
     # Filter to only articles that need publishing on requested platforms
     if args.limit > 0:
-        social_plats = ["twitter", "bluesky", "threads"]
+        social_plats = ["bluesky", "threads"]
         unpublished = []
         for a in articles:
             is_share = a.get("share", False)
             already = a.get("published", [])
             # Determine which platforms this article actually needs
+            # NOTE: twitter/X is currently disabled (account suspended) — excluded from "all"
             if args.platform == "all":
-                needed = (["twitter", "bluesky", "threads", "ghost"] if is_share
+                needed = (["bluesky", "threads", "ghost"] if is_share
                           else ["ghost"])
             else:
                 needed = [args.platform]
@@ -844,8 +1189,10 @@ def main():
         "ghost": publish_ghost,
     }
 
+    # NOTE: twitter/X is currently disabled (account suspended) — excluded from "all".
+    # Use --platform twitter explicitly to override.
     if args.platform == "all":
-        requested_platforms = ["twitter", "bluesky", "threads", "ghost"]
+        requested_platforms = ["bluesky", "threads", "ghost"]
     else:
         requested_platforms = [args.platform]
 

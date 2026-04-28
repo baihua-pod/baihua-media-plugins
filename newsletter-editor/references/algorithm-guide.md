@@ -1,6 +1,8 @@
 # Social Platform Algorithm Guide
 
-Based on X/Twitter 2025-2026 algorithm research. Used by `publish.py` to format threads.
+Based on 2025-2026 algorithm research. Used by `publish.py` to format threads.
+
+**Platform status**: X/Twitter account is currently suspended. Active platforms: **Bluesky** (@theamericanroulette.bsky.social) and **Threads** (@theamericanroulette). Thread structure below applies to all platforms; algorithm weights are X-specific but the thread format benefits engagement on Bluesky/Threads too.
 
 ## Thread Structure (optimized for algorithm)
 

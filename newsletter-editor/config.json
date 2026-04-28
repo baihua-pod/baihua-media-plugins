@@ -7,8 +7,10 @@
       "name": "Memeorandum",
       "url": "https://www.memeorandum.com/feed.xml",
       "type": "aggregator",
+      "scrape_mode": "web",
+      "max_articles": 40,
       "enabled": true,
-      "description": "Political news aggregator — primary source"
+      "description": "Political news aggregator — primary source (web scrape mode: extracts all stories from homepage, not limited to RSS 15)"
     },
     {
       "name": "Political Wire",
