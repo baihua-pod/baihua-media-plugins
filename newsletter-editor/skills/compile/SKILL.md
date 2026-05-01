@@ -41,13 +41,31 @@ Audit trail: `git diff` on approved/*.md shows exactly what was rewritten.
 
 ## Step 2: Editorial Review
 
-After `compile.py`, review `newsletter.md` for merge opportunities:
+After `compile.py`, review `newsletter.md` for **merge** AND **prune** opportunities. Compile output is a superset; the published newsletter should be ~60-70% of it (e.g., 4/28 had 56 articles compiled → 37 published).
+
+### 2.1 Merge
 
 1. **Identify overlapping articles**: Same event covered by multiple sources → combine into one entry, preserve unique info from each, list all sources: `（[Source1](url1) / [Source2](url2)）`
 2. **When NOT to merge**: Different angles that are independently valuable (e.g., NATO reaction vs Japan reaction vs China reaction — different reader interests, keep separate)
 3. **Write as cohesive narrative**: Merged articles must read like a single news piece. Use transition words (「然而」「与此同时」「在外交层面」), no bold sub-headers within entries
-4. **Update article count** in header after merges: `> 今日共 X 篇 | 免费 Y 篇 · 付费 Z 篇`
+
+### 2.2 Prune
+
+Cut these 4 categories aggressively. The compile output is a working set, not a publish list:
+
+1. **同主题过量覆盖**：同一事件 4+ 角度 → 留 1-2 条核心 + merge 进去，其余删（删除即从 newsletter.md 删行，不动 approved/*.md）
+2. **付费深度分析**：除非⭐8+ 关键背景或独家解读，长篇付费分析（评论、专栏、深度报告）默认删——读者付费阅读率低
+3. **小众话题**：⭐≤6 且与当日主线（伊朗/特朗普/国会/司法）无关的——州地方新闻、专业领域更新、文化新闻
+4. **冗余跟进**：已有主条覆盖核心事实，跟进角度增量小（"X 还说了 Y"、"Z 也评论了"）
+
+**判定标准**：删之前问「读者错过这条会不会缺重要信息？」如果主条已涵盖、或这是付费/小众/跟进——删。
+
+### 2.3 Cleanup
+
+4. **Update article count** in header after merges/cuts: `> 今日共 X 篇 | 免费 Y 篇 · 付费 Z 篇`
 5. **Reorder if needed**: Move articles between sections if editorial judgment suggests better fit
+
+**Note**: Step 2 edits only `newsletter.md`. Source `approved/*.md` stays untouched—`compile.py --learn --apply` will later backprop your **kept** entries' wording to source. Pruned entries do **not** propagate (by design—they were never in newsletter.md to learn from).
 
 ## Weekend / Multi-Day Edition
 
