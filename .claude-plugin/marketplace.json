@@ -18,6 +18,15 @@
         "./skills/review",
         "./skills/compile"
       ]
+    },
+    {
+      "name": "transcript",
+      "description": "中文播客音频转 SRT 字幕。OpenAI Whisper API + 自动 ffmpeg 切片，处理超过 25MB 的长音频，输出原生 SRT 时间码。",
+      "source": "./transcript",
+      "strict": false,
+      "skills": [
+        "./skills/transcribe"
+      ]
     }
   ]
 }

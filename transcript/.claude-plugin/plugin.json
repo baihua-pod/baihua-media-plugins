@@ -1,0 +1,8 @@
+{
+  "name": "transcript",
+  "version": "0.1.0",
+  "description": "中文播客转录为 SRT 字幕。使用 OpenAI Whisper API（whisper-1，原生 SRT 输出），自动 ffmpeg 切片处理大文件并拼接时间戳。",
+  "author": {
+    "name": "Sirui Hua"
+  }
+}
