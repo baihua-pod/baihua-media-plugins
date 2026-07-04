@@ -71,6 +71,14 @@ class Chunk:
     start_offset_s: float
 
 
+@dataclass
+class Cue:
+    """One SRT cue after timestamp parsing."""
+    start_ms: int
+    end_ms: int
+    text_lines: list[str]
+
+
 # --------------------------------------------------------------------------- #
 # Chunking strategies                                                         #
 # --------------------------------------------------------------------------- #
@@ -269,13 +277,42 @@ def _ms_to_ts(total_ms: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def parse_srt(srt_text: str) -> list[Cue]:
+    """Parse SRT text into cues, ignoring original cue numbers."""
+    cues: list[Cue] = []
+    for block in re.split(r"\n\s*\n", srt_text.strip()):
+        lines = block.splitlines()
+        if len(lines) < 2:
+            continue
+        ts_idx = 1 if len(lines) > 1 and _TIMESTAMP_LINE.match(lines[1] or "") else 0
+        ts_match = _TIMESTAMP_LINE.match(lines[ts_idx])
+        if not ts_match:
+            continue
+        cues.append(Cue(
+            start_ms=_ts_to_ms(*ts_match.group(1, 2, 3, 4)),
+            end_ms=_ts_to_ms(*ts_match.group(5, 6, 7, 8)),
+            text_lines=lines[ts_idx + 1:],
+        ))
+    return cues
+
+
+def format_srt(cues: list[Cue]) -> str:
+    """Format cues as a renumbered SRT."""
+    out_lines: list[str] = []
+    for i, cue in enumerate(cues, 1):
+        out_lines.append(str(i))
+        out_lines.append(f"{_ms_to_ts(cue.start_ms)} --> {_ms_to_ts(cue.end_ms)}")
+        out_lines.extend(cue.text_lines)
+        out_lines.append("")
+    return "\n".join(out_lines).rstrip() + "\n"
+
+
 def stitch_srt(parts: list[tuple[str, float]]) -> str:
     """Merge per-chunk SRT outputs into one re-numbered SRT.
 
     `parts` is a list of (srt_text, start_offset_seconds) tuples in order.
     """
-    out_lines: list[str] = []
-    cue_index = 1
+    cues: list[Cue] = []
 
     for srt_text, offset_s in parts:
         offset_ms = int(round(offset_s * 1000))
@@ -294,14 +331,176 @@ def stitch_srt(parts: list[tuple[str, float]]) -> str:
             start_ms = _ts_to_ms(*ts_match.group(1, 2, 3, 4)) + offset_ms
             end_ms = _ts_to_ms(*ts_match.group(5, 6, 7, 8)) + offset_ms
             text_lines = lines[ts_idx + 1:]
+            cues.append(Cue(start_ms=start_ms, end_ms=end_ms, text_lines=text_lines))
 
-            out_lines.append(str(cue_index))
-            out_lines.append(f"{_ms_to_ts(start_ms)} --> {_ms_to_ts(end_ms)}")
-            out_lines.extend(text_lines)
-            out_lines.append("")
-            cue_index += 1
+    return format_srt(cues)
 
-    return "\n".join(out_lines).rstrip() + "\n"
+
+# --------------------------------------------------------------------------- #
+# SRT QA and cleanup                                                          #
+# --------------------------------------------------------------------------- #
+
+KNOWN_HALLUCINATION_LINES = {
+    "【优优独播剧场——YoYo Television Series Exclusive】",
+    "请不吝点赞、订阅、转发、打赏支持明镜与点点栏目",
+}
+
+TEXT_REPLACEMENTS = {
+    "美轮美奂": "美轮美换",
+    "The America Roulette": "The American Roulette",
+}
+
+PROMPT_LEAK_MARKERS = {
+    "主持人小华",
+    "王浩南",
+    "Tanish",
+    "Tanisha",
+    "白宫",
+    "国会",
+    "最高法院",
+    "关税",
+    "移民",
+    "外交政策",
+}
+
+
+def cue_text(cue: Cue) -> str:
+    return "\n".join(line.strip() for line in cue.text_lines if line.strip())
+
+
+def compact_text(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def is_prompt_leak(text: str, prompt: str | None) -> bool:
+    """High-confidence prompt leakage detector for low-speech chunks."""
+    if not prompt:
+        return False
+    compact = compact_text(text)
+    compact_prompt = compact_text(prompt)
+    if len(compact) >= 16 and compact in compact_prompt:
+        return True
+    marker_hits = sum(1 for marker in PROMPT_LEAK_MARKERS if marker in text)
+    return marker_hits >= 5 and ("主持人" in text or "常讨论" in text)
+
+
+def is_repeated_hallucination_run(cues: list[Cue], start: int) -> int:
+    """Return run length for repeated long text cues starting at `start`."""
+    text = compact_text(cue_text(cues[start]))
+    if len(text) < 10:
+        return 0
+    end = start + 1
+    while end < len(cues) and compact_text(cue_text(cues[end])) == text:
+        end += 1
+    run_len = end - start
+    return run_len if run_len >= 3 else 0
+
+
+def is_tail_noise_text(text: str) -> bool:
+    compact = compact_text(text)
+    if not compact:
+        return True
+    if compact in {"%", "9", "发", "购买", "发货", "发盖", "发布", "发行"}:
+        return True
+    return bool(re.fullmatch(r"[%\W_]+", compact))
+
+
+def find_tail_noise_start(cues: list[Cue], duration_ms: int) -> int | None:
+    """Find a high-confidence trailing hallucination run, if present."""
+    tail_window_start = max(0, duration_ms - 120_000)
+    for i, cue in enumerate(cues):
+        if cue.start_ms < tail_window_start:
+            continue
+        run = 0
+        for j in range(i, min(len(cues), i + 12)):
+            if is_tail_noise_text(cue_text(cues[j])):
+                run += 1
+            else:
+                break
+        if run >= 5:
+            return i
+    return None
+
+
+def clean_srt(raw_srt: str, duration_s: float, prompt: str | None) -> tuple[str, list[str]]:
+    """Remove high-confidence Whisper hallucinations and return QA notes."""
+    duration_ms = int(round(duration_s * 1000))
+    cues = parse_srt(raw_srt)
+    issues: list[str] = []
+
+    replacement_counts: dict[str, int] = {}
+    for cue in cues:
+        for old, new in TEXT_REPLACEMENTS.items():
+            count = sum(line.count(old) for line in cue.text_lines)
+            if count:
+                cue.text_lines = [line.replace(old, new) for line in cue.text_lines]
+                replacement_counts[old] = replacement_counts.get(old, 0) + count
+    for old, count in sorted(replacement_counts.items()):
+        issues.append(f"replaced {count} occurrence(s) of {old!r}")
+
+    remove_indexes: set[int] = set()
+    known_count = 0
+    prompt_count = 0
+    repeat_count = 0
+    beyond_duration_count = 0
+
+    i = 0
+    while i < len(cues):
+        text = cue_text(cues[i])
+        if text in KNOWN_HALLUCINATION_LINES:
+            remove_indexes.add(i)
+            known_count += 1
+            i += 1
+            continue
+        if is_prompt_leak(text, prompt):
+            remove_indexes.add(i)
+            prompt_count += 1
+            i += 1
+            continue
+        run_len = is_repeated_hallucination_run(cues, i)
+        if run_len:
+            repeat_count += run_len
+            remove_indexes.update(range(i, i + run_len))
+            i += run_len
+            continue
+        if cues[i].start_ms >= duration_ms:
+            remove_indexes.add(i)
+            beyond_duration_count += 1
+        elif cues[i].end_ms > duration_ms:
+            cues[i].end_ms = duration_ms
+            if cues[i].end_ms <= cues[i].start_ms:
+                remove_indexes.add(i)
+                beyond_duration_count += 1
+        i += 1
+
+    tail_start = find_tail_noise_start(cues, duration_ms)
+    tail_count = 0
+    if tail_start is not None:
+        tail_count = len(cues) - tail_start
+        remove_indexes.update(range(tail_start, len(cues)))
+
+    cleaned = [cue for idx, cue in enumerate(cues) if idx not in remove_indexes]
+
+    if known_count:
+        issues.append(f"removed {known_count} known hallucination cue(s)")
+    if prompt_count:
+        issues.append(f"removed {prompt_count} prompt-leak cue(s)")
+    if repeat_count:
+        issues.append(f"removed {repeat_count} repeated hallucination cue(s)")
+    if beyond_duration_count:
+        issues.append(f"removed {beyond_duration_count} cue(s) beyond audio duration")
+    if tail_count:
+        issues.append(f"trimmed {tail_count} trailing noise cue(s)")
+
+    for prev, cur in zip(cleaned, cleaned[1:]):
+        gap_ms = cur.start_ms - prev.end_ms
+        if gap_ms > 60_000:
+            issues.append(
+                "large gap after cleanup: "
+                f"{_ms_to_ts(prev.end_ms)} → {_ms_to_ts(cur.start_ms)}"
+            )
+
+    return format_srt(cleaned), issues
 
 
 # --------------------------------------------------------------------------- #
@@ -347,12 +546,18 @@ def main() -> int:
         "--max-chunk-mb", type=float, default=24.0,
         help="Max chunk size in MB (default: 24, Whisper limit is 25)",
     )
+    parser.add_argument(
+        "--no-clean", action="store_true",
+        help="Write raw Whisper SRT without heuristic cleanup. A raw backup is "
+             "still written unless the output path itself is the raw backup.",
+    )
     args = parser.parse_args()
 
     if not args.audio.exists():
         sys.exit(f"Audio file not found: {args.audio}")
 
     out_path = args.out or args.audio.with_suffix(".srt")
+    raw_path = out_path.with_name(f"{out_path.stem}.whisper-raw{out_path.suffix}")
     max_bytes = int(args.max_chunk_mb * 1024 * 1024)
     client = OpenAI(api_key=load_api_key())
 
@@ -374,7 +579,24 @@ def main() -> int:
 
         parts = transcribe_concurrently(client, chunks, args.prompt, args.workers)
 
-    out_path.write_text(stitch_srt(parts), encoding="utf-8")
+    raw_srt = stitch_srt(parts)
+    if raw_path != out_path:
+        raw_path.write_text(raw_srt, encoding="utf-8")
+        print(f"[qa] raw backup: {raw_path}")
+
+    if args.no_clean:
+        final_srt = raw_srt
+        print("[qa] cleanup disabled (--no-clean)")
+    else:
+        final_srt, issues = clean_srt(raw_srt, duration, args.prompt)
+        if issues:
+            print("[qa] cleanup / warnings:")
+            for issue in issues:
+                print(f"     - {issue}")
+        else:
+            print("[qa] no obvious hallucination patterns found")
+
+    out_path.write_text(final_srt, encoding="utf-8")
     print(f"[done] wrote {out_path}")
     return 0
 

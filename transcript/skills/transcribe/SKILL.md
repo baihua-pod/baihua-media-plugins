@@ -65,12 +65,35 @@ python3 transcribe.py <audio_path> --prompt "<natural sentence>"
 - `--workers N`：并发数（默认 6）
 - `--silence-aware`：在静音处切片，避免句中切断。会先跑一遍 ffmpeg `silencedetect`，多花 5-10 秒，但字幕边界更干净
 - `--max-chunk-mb FLOAT`：调整切片大小上限（默认 24，Whisper 限 25）
+- `--no-clean`：关闭自动清理，直接写 Whisper 原始 SRT（排查时使用）
 
-### Step 4：报告结果
+### Step 4：QA + 报告结果
+
+脚本默认会写两份文件：
+- `<audio>.srt`：交付版，经过高置信度机械清理
+- `<audio>.whisper-raw.srt`：Whisper 原始输出备份，用于回溯
+
+自动 QA 会处理/提示：
+- 开头水印式幻听（如「优优独播剧场」）
+- prompt 泄漏或低语音段重复输出 prompt
+- 尾部 `%`、单字、无意义短词连续幻听
+- cue 超过音频实际时长
+- 节目名「美轮美奂」→「美轮美换」
+- 清理后出现超过 60 秒的大段空缺（必须人工复核，可能是整段转录失败或原音频低电平）
+
+转录后必须检查命令行 `[qa]` 输出，再轻读开头和结尾：
+
+```bash
+sed -n '1,24p' <srt_path>
+tail -24 <srt_path>
+```
+
+如果 `[qa]` 显示 `large gap after cleanup`，不要直接交付；需要单独切出该时间段复核音频，或用无 prompt / 其他 transcription model 重转该段。
 
 ```
 ✓ 转录完成：<srt_path>
   时长 X 分钟，切成 N 片，用时约 Y 秒。
+  raw 备份：<raw_srt_path>
 ```
 
 如果用户希望预览，读 SRT 前 20 行展示。
@@ -81,6 +104,8 @@ python3 transcribe.py <audio_path> --prompt "<natural sentence>"
 - **`ffmpeg: command not found`** — 提示 `brew install ffmpeg`。
 - **`OPENAI_API_KEY not set`** — 检查 `transcript/.env` 是否存在且包含 `OPENAI_API_KEY=...`。
 - **API 报 413 / "file too large"** — 切片产物超过 24MB；调小 `MAX_CHUNK_BYTES` 或检查 `chunk_audio()` 实现。
+- **prompt 被重复写进字幕** — 这是 Whisper 在低语音/空白段的典型幻听。脚本会自动删除高置信度重复段并报告 `large gap`；需要人工复核该时间段。
+- **尾部出现 `%` 或单字垃圾 cue** — 脚本会自动 trim 高置信度尾部噪声；仍需检查 `tail -24`。
 
 ## 设计说明
 
