@@ -7,7 +7,7 @@ Usage:
 
     # Recommended for Chinese podcasts: natural-sentence prompt
     python3 transcribe.py episodes/foo.mp3 \\
-        --prompt "这是一档名叫'美轮美换'的中文政治播客，主持人小华、王浩南、Tanish。"
+        --prompt "这是一档名叫'美轮美换'的中文政治播客，主持人包括王浩岚、Talich、小华、Lokin。"
 
     # Faster: parallel chunk uploads (default 6 workers)
     python3 transcribe.py episodes/foo.mp3 --workers 6
@@ -351,10 +351,10 @@ TEXT_REPLACEMENTS = {
 }
 
 PROMPT_LEAK_MARKERS = {
-    "主持人小华",
-    "王浩南",
-    "Tanish",
-    "Tanisha",
+    "王浩岚",
+    "Talich",
+    "小华",
+    "Lokin",
     "白宫",
     "国会",
     "最高法院",
